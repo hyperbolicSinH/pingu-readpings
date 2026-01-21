@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Book Ping App</title>
+    <!-- This makes it a PWA -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#ffffff">
+    <!-- PDF.js library for reading PDFs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        input, button { margin: 10px 0; }
+        #progress { margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Book Ping App</h1>
+    <p>Upload your PDF book below. It will process chapters and start pinging you twice a day (9 AM and 6 PM) with summaries.</p>
+    
+    <input type="file" id="pdfUpload" accept=".pdf">
+    <button onclick="processPDF()">Upload and Process</button>
+    
+    <div id="progress"></div>
+    <div id="notifications"></div>
+    
+    <script>
+        // Ask for notification permission on load
+        if ('Notification' in window) {
+            Notification.requestPermission();
+        }
+        
+        // Simple chapter detection (looks for "Chapter" keywords)
+        async function extractChapters(text) {
+            const chapters = [];
+            const lines = text.split('\n');
+            let currentChapter = '';
+            lines.forEach(line => {
+                if (line.trim().startsWith('Chapter')) {
+                    if (currentChapter) chapters.push(currentChapter);
+                    currentChapter = line;
+                } else {
+                    currentChapter += '\n' + line;
+                }
+            });
+            if (currentChapter) chapters.push(currentChapter);
+            return chapters;
+        }
+        
+        // Generate summary using a free AI API (Hugging Face example; replace token if needed)
+        async function generateSummary(chapterText) {
+            const response = await fetch('https://api-inference.huggingface.co/models/facebook/bart-large-cnn', {
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Bearer hf_your_token_here', // Sign up at huggingface.co for a free token
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ inputs: chapterText.slice(0, 1000) }) // Limit to avoid API limits
+            });
+            const data = await response.json();
+            return data[0]?.summary_text || 'Summary generation failed.';
+        }
+        
+        // Process uploaded PDF
+        async function processPDF() {
+            const file = document.getElementById('pdfUpload').files[0];
+            if (!file) return alert('Select a PDF first!');
+            
+            const loadingTask = pdfjsLib.getDocument(URL.createObjectURL(file));
+            const pdf = await loadingTask.promise;
+            let fullText = '';
+            
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const content = await page.getTextContent();
+                fullText += content.items.map(item => item.str).join(' ') + '\n';
+            }
+            
+            const chapters = await extractChapters(fullText);
+            localStorage.setItem('bookChapters', JSON.stringify(chapters));
+            localStorage.setItem('currentChapter', 0);
+            document.getElementById('progress').innerText = 'Book processed! ' + chapters.length + ' chapters detected.';
+            startScheduling();
+        }
+        
+        // Send notification
+        function sendPing(content) {
+            if (Notification.permission === 'granted') {
+                new Notification('Book Ping', { body: content });
+            }
+            document.getElementById('notifications').innerText += '\nPing: ' + content;
+        }
+        
+        // Scheduling: Check every hour if it's ping time
+        function startScheduling() {
+            setInterval(async () => {
+                const now = new Date();
+                const hour = now.getHours();
+                if (hour === 9 || hour === 18) { // 9 AM or 6 PM
+                    const chapters = JSON.parse(localStorage.getItem('bookChapters') || '[]');
+                    let current = parseInt(localStorage.getItem('currentChapter') || 0);
+                    if (current >= chapters.length) current = 0; // Loop if finished
+                    
+                    const chapterText = chapters[current];
+                    const summary = await generateSummary(chapterText);
+                    sendPing('Chapter ' + (current + 1) + ' Summary: ' + summary);
+                    
+                    localStorage.setItem('currentChapter', current + 1);
+                }
+            }, 3600000); // Every hour (3600 seconds * 1000 ms)
+        }
+        
+        // Start scheduling if book is already loaded
+        if (localStorage.getItem('bookChapters')) {
+            document.getElementById('progress').innerText = 'Book loaded from previous upload.';
+            startScheduling();
+        }
+    </script>
+    
+    <!-- Service Worker for PWA -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').then(() => console.log('Service Worker registered'));
+        }
+    </script>
+</body>
+</html>
